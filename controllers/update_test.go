@@ -747,6 +747,7 @@ Images:
 								},
 								Push: &imagev1.PushSpec{
 									Branch: pushBranch,
+									Force:  false,
 								},
 							},
 						},
@@ -804,6 +805,51 @@ Images:
 					Expect(err).NotTo(HaveOccurred())
 					Expect(head.String()).NotTo(Equal(headHash))
 				})
+
+				It("should fail to force push when force push set to false (default)", func() {
+					// observe the first commit
+					waitForNewHead(localRepo, pushBranch)
+
+					// Create commit on push branch that would conflict with a commit on top of the a branch from the checkout branch
+					dummyCommitMessage := "Dummy Commit"
+					commitInRepo(cloneLocalRepoURL, pushBranch, dummyCommitMessage, func(tmp string) {})
+
+					waitForNewHead(localRepo, pushBranch)
+
+					head, err := localRepo.Reference(plumbing.NewRemoteReferenceName(originRemote, pushBranch), true)
+					Expect(err).NotTo(HaveOccurred())
+					pushBranchInitialHeadHash := head.String()
+					dummyCommit, err := localRepo.CommitObject(head.Hash())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(dummyCommit.Message).To(Equal(dummyCommitMessage))
+
+					// update the policy and expect another commit in the push branch, deleting local branch to ensure commit is not on top of the dummy commit
+					localRepo.DeleteBranch(pushBranch)
+					policy.Status.LatestImage = "helloworld:v1.3.0"
+					Expect(k8sClient.Status().Update(context.TODO(), policy)).To(Succeed())
+
+					// Delete local push branch and refetch remote
+					localRepo.DeleteBranch(pushBranch)
+					waitForNewHead(localRepo, pushBranch)
+					head, err = localRepo.Reference(plumbing.NewRemoteReferenceName(originRemote, pushBranch), true)
+					Expect(err).NotTo(HaveOccurred())
+					fetchedPushBranchLatestHeadHash := head.String()
+					pushBranchLatestCommit, err := localRepo.CommitObject(head.Hash())
+					Expect(err).NotTo(HaveOccurred())
+
+					// Expect push to fail
+					// Check with messages for easier debugging
+					Expect(dummyCommit.Message).To(Equal((pushBranchLatestCommit.Message)))
+
+					// Check with hashes for certainty
+					Expect(pushBranchInitialHeadHash).To(Equal((fetchedPushBranchLatestHeadHash)))
+
+				})
+
+				// It("should force push and rewrite when force set to true", func() {
+				// 	update.Spec.GitSpec.Push.Force = true
+
+				// })
 
 				AfterEach(func() {
 					Expect(k8sClient.Delete(context.Background(), update)).To(Succeed())
